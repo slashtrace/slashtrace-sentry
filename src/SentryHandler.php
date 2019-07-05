@@ -2,25 +2,49 @@
 
 namespace SlashTrace\Sentry;
 
+use function Sentry\addBreadcrumb;
+use function Sentry\captureException;
+use function Sentry\configureScope;
+use Sentry\ClientBuilder;
+use Sentry\ClientInterface;
+use Sentry\Breadcrumb;
+use Sentry\State\Hub;
+use Sentry\State\HubInterface;
+use Sentry\State\Scope;
+
 use SlashTrace\Context\User;
 use SlashTrace\EventHandler\EventHandler;
 use SlashTrace\EventHandler\EventHandlerException;
 
-use Raven_Client;
-
 use Exception;
+use InvalidArgumentException;
 
 class SentryHandler implements EventHandler
 {
-    /** @var Raven_Client */
-    private $sentry;
-
     /**
-     * @param string|Raven_Client $sentry
+     * @param string|ClientInterface|HubInterface $input
      */
-    public function __construct($sentry)
+    public function __construct($input)
     {
-        $this->sentry = $sentry instanceof Raven_Client ? $sentry : new Raven_Client($sentry);
+        if (is_string($input)) {
+            $hub = new Hub(ClientBuilder::create([
+                'dsn'                  => $input,
+                'default_integrations' => false,
+            ])->getClient());
+        } elseif ($input instanceof ClientInterface) {
+            $hub = new Hub($input);
+        } elseif ($input instanceof HubInterface) {
+            $hub = $input;
+        } else {
+            throw new InvalidArgumentException(
+                sprintf(
+                    'Invalid constructor argument. Input must be one of: [%s]',
+                    implode(', ', ['string', ClientInterface::class, HubInterface::class])
+                )
+            );
+        }
+
+        Hub::setCurrent($hub);
     }
 
     /**
@@ -31,7 +55,7 @@ class SentryHandler implements EventHandler
     public function handleException($exception)
     {
         try {
-            $this->sentry->captureException($exception);
+            captureException($exception);
         } catch (Exception $e) {
             throw new EventHandlerException($e->getMessage(), $e->getCode(), $e);
         }
@@ -44,11 +68,13 @@ class SentryHandler implements EventHandler
      */
     public function setUser(User $user)
     {
-        $this->sentry->user_context(array_filter([
-            "id"    => $user->getId(),
-            "email" => $user->getEmail(),
-            "name"  => $user->getName()
-        ]));
+        configureScope(function (Scope $scope) use ($user): void {
+            $scope->setUser(array_filter([
+                "id"    => $user->getId(),
+                "email" => $user->getEmail(),
+                "name"  => $user->getName(),
+            ]));
+        });
     }
 
     /**
@@ -56,20 +82,20 @@ class SentryHandler implements EventHandler
      * @param array $data
      * @return void
      */
-    public function recordBreadcrumb($title, array $data = [])
+    public function recordBreadcrumb($title, array $data = []): void
     {
-        $this->sentry->breadcrumbs->record(array_merge($data, [
-            "message" => $title
-        ]));
+        addBreadcrumb(new Breadcrumb(
+            Breadcrumb::LEVEL_INFO,
+            Breadcrumb::TYPE_DEFAULT,
+            'error_reporting',
+            $title,
+            $data
+        ));
     }
 
-    /**
-     * @param string $release
-     * @return void
-     */
-    public function setRelease($release)
+    public function setRelease($release): void
     {
-        $this->sentry->setRelease($release);
+        Hub::getCurrent()->getClient()->getOptions()->setRelease($release);
     }
 
     /**
@@ -78,6 +104,6 @@ class SentryHandler implements EventHandler
      */
     public function setApplicationPath($path)
     {
-        $this->sentry->setAppPath($path);
+        Hub::getCurrent()->getClient()->getOptions()->setProjectRoot($path);
     }
 }
