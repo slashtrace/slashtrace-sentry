@@ -2,28 +2,38 @@
 
 namespace SlashTrace\Sentry\Tests;
 
+use InvalidArgumentException;
+use Sentry\Breadcrumb;
+use Sentry\ClientInterface;
+use Sentry\Options;
+use Sentry\State\HubInterface;
+use Sentry\State\Scope;
 use SlashTrace\Context\User;
 use SlashTrace\EventHandler\EventHandlerException;
 use SlashTrace\Sentry\SentryHandler;
 
-use Raven_Breadcrumbs;
-use Raven_Client;
 use PHPUnit\Framework\TestCase;
 
 use Exception;
 
 class SentryHandlerTest extends TestCase
 {
+    public function testExceptionIsThrownForInvalidConstructorArgument()
+    {
+        $this->expectException(InvalidArgumentException::class);
+        new SentryHandler($this);
+    }
+
     public function testExceptionIsPassedToSentryClient()
     {
         $exception = new Exception();
 
-        $sentry = $this->createMock(Raven_Client::class);
-        $sentry->expects($this->once())
+        $client = $this->createMock(ClientInterface::class);
+        $client->expects($this->once())
             ->method("captureException")
             ->with($exception);
 
-        $handler = new SentryHandler($sentry);
+        $handler = new SentryHandler($client);
         $handler->handleException($exception);
     }
 
@@ -32,13 +42,13 @@ class SentryHandlerTest extends TestCase
         $originalException = new Exception();
         $sentryException = new Exception();
 
-        $sentry = $this->createMock(Raven_Client::class);
-        $sentry->expects($this->once())
+        $client = $this->createMock(ClientInterface::class);
+        $client->expects($this->once())
             ->method("captureException")
             ->with($originalException)
             ->willThrowException($sentryException);
 
-        $handler = new SentryHandler($sentry);
+        $handler = new SentryHandler($client);
         try {
             $handler->handleException($originalException);
             $this->fail("Expected exception: " . EventHandlerException::class);
@@ -54,80 +64,69 @@ class SentryHandlerTest extends TestCase
         $user->setEmail("pfry@planetexpress.com");
         $user->setName("Philip J. Fry");
 
-        $sentry = $this->createMock(Raven_Client::class);
-        $sentry->expects($this->once())
-            ->method("user_context")
-            ->with([
-                "id"    => $user->getId(),
-                "email" => $user->getEmail(),
-                "name"  => $user->getName()
-            ]);
+        $hub = $this->createMock(HubInterface::class);
+        $hub->expects($this->once())
+            ->method("configureScope")
+            ->with($this->callback(function (callable $scopeCallback) use ($user): bool {
+                $scope = new Scope();
+                $scopeCallback($scope);
+                $this->assertEquals([
+                    "id"    => $user->getId(),
+                    "email" => $user->getEmail(),
+                    "name"  => $user->getName(),
+                ], $scope->getUser());
 
-        $handler = new SentryHandler($sentry);
-        $handler->setUser($user);
-    }
+                return true;
+            }));
 
-    public function testPartialUserData()
-    {
-        $user = new User();
-        $user->setEmail("pfry@planetexpress.com");
-
-        $sentry = $this->createMock(Raven_Client::class);
-        $sentry->expects($this->once())
-            ->method("user_context")
-            ->with([
-                "email" => $user->getEmail(),
-            ]);
-
-        $handler = new SentryHandler($sentry);
+        $handler = new SentryHandler($hub);
         $handler->setUser($user);
     }
 
     public function testBreadcrumbsArePassedToSentryClient()
     {
-        $breadcrumbs = $this->createMock(Raven_Breadcrumbs::class);
-        $breadcrumbs->expects($this->once())
-            ->method("record")
-            ->with([
-                "message" => "Something happened!",
-                "foo"     => "bar",
-                "bar"     => "baz"
-            ]);
+        $title = "Something happened!";
+        $data = ["foo" => "bar"];
 
-        /** @var Raven_Client $sentry */
-        $sentry = $this->createMock(Raven_Client::class);
-        $sentry->breadcrumbs = $breadcrumbs;
+        $hub = $this->createMock(HubInterface::class);
+        $hub->expects($this->once())
+            ->method("addBreadcrumb")
+            ->with($this->callback(function (Breadcrumb $breadcrumb) use ($title, $data): bool {
+                $this->assertEquals($title, $breadcrumb->getMessage());
+                $this->assertEquals($data, $breadcrumb->getMetadata());
+                return true;
+            }));
 
-        $handler = new SentryHandler($sentry);
-        $handler->recordBreadcrumb("Something happened!", [
-            "foo" => "bar",
-            "bar" => "baz"
-        ]);
+        $handler = new SentryHandler($hub);
+        $handler->recordBreadcrumb($title, $data);
     }
 
     public function testReleaseIsPassedToSentryClient()
     {
         $release = "1.0.0";
+        $options = new Options();
 
-        $sentry = $this->createMock(Raven_Client::class);
-        $sentry->expects($this->once())
-            ->method("setRelease")
-            ->with($release);
+        $client = $this->createMock(ClientInterface::class);
+        $client->method("getOptions")->willReturn($options);
 
-        $handler = new SentryHandler($sentry);
+        $handler = new SentryHandler($client);
         $handler->setRelease($release);
+
+        $this->assertEquals($release, $options->getRelease());
     }
 
     public function testApplicationPathIsPassedToSentryClient()
     {
         $path = __DIR__;
 
-        $sentry = $this->createMock(Raven_Client::class);
-        $sentry->expects($this->once())
-            ->method("setAppPath")
-            ->with($path);
+        $options = new Options();
 
-        $handler = new SentryHandler($sentry);
+        $client = $this->createMock(ClientInterface::class);
+        $client->method("getOptions")->willReturn($options);
+
+        $handler = new SentryHandler($client);
         $handler->setApplicationPath($path);
+
+        $this->assertEquals($path, $options->getProjectRoot());
     }
 }

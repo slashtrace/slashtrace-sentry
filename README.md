@@ -26,8 +26,8 @@ Use it to send your errors and exceptions to your Sentry account.
    Alternatively, you can pass in a pre-configured Sentry client when you instantiate the handler:
    
    ```
-   $sentry = new Raven_Client("https://abcdefghijklmnopqrstuvwxyz123456@sentry.io/123456");
-   $handler = new SentryHandler($sentry);
+   $client = Sentry\ClientBuilder::create(["dsn" => "..."]);
+   $handler = new SentryHandler($client);
    
    $slashtrace->addHandler($handler);
    ```
